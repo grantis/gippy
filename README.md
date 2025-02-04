@@ -1,84 +1,75 @@
 # Gippy CLI
 
-**Gippy** is a secure, native command-line interface (CLI) built in Swift for interacting with OpenAI’s ChatGPT API. It supports an easy configuration flow for your API key, local storage in a config file, and optional debug logging.
+Gippy is a secure, native command-line interface (CLI) built in Swift for
+interacting with OpenAI’s ChatGPT API. It supports an easy configuration
+flow for your API key, local storage in a config file, and optional debug
+logging.
 
-## Features
+## FEATURES
+- Native Swift CLI – No Python or other runtime dependencies required.
+- Async/Await – Modern Swift concurrency for clean, readable async code.
+- Easy Configuration – A "configure" subcommand guides you through setting
+  your API key.
+- Environment Variable Fallback – If `OPENAI_API_KEY` is set, Gippy will use
+  it automatically.
+- Debug Mode – Pass "--debug" to see detailed logs, including request /
+  response data.
 
-- **Native Swift CLI** – No Python or other runtime dependencies required.
-- **Async/Await** – Modern Swift concurrency for clean, readable async code.
-- **Easy Configuration** – A `configure` subcommand guides you through setting your API key.
-- **Environment Variable Fallback** – If `OPENAI_API_KEY` is set, Gippy will use it automatically.
-- **Debug Mode** – Pass `--debug` to see detailed logs, including request/response data.
+## GETTING STARTED
 
----
+1. Clone the Repository
 
-## Getting Started
+    git clone https://github.com/yourusername/GippyCLI.git
+    cd GippyCLI
 
-### 1. Clone the Repository
+2. Build and Install
 
-```bash
-git clone https://github.com/yourusername/GippyCLI.git
-cd GippyCLI
-```
+   This project uses Swift Package Manager and provides a convenient Makefile.
+   Ensure you have Swift 5.7 or later installed on macOS 12+.
 
-### 2. Build and Install
-This project uses Swift Package Manager and provides a convenient Makefile. Ensure you have Swift 5.7 or later installed on macOS 12+.
+    make build      # Builds the project
+    make install    # Copies the binary to /usr/local/bin/gippy (requires sudo)
 
-```bash
-make build      # Builds the project
-make install    # Copies the binary to /usr/local/bin/gippy (requires sudo)
-```
-Now the command gippy is available anywhere in your terminal.
+   Now the command "gippy" is available anywhere in your terminal.
 
-Configuration
-#### Method A: Configure Subcommand
-Run:
+## CONFIGURATION
 
-```bash
-gippy configure
-```
+### Method A: Configure Subcommand
 
-You’ll be prompted to enter your OpenAI API key (e.g., sk-...). By default, it saves your key to ~/.gippy/config.json. If you want to validate the key immediately (slightly more secure), use:
+    gippy configure
 
-```bash
-gippy configure --test-key
+You’ll be prompted to enter your OpenAI API key (e.g., sk-...).
+By default, it saves your key to ~/.gippy/config.json.
+
+If you want to validate the key immediately (slightly more secure), use:
+
+    gippy configure --test-key
+
 This performs a quick request to ensure your key is valid, then stores it.
-```
 
-#### Method B: Environment Variable
-Alternatively, you can set `OPENAI_API_KEY` in your shell profile:
+### Method B: Environment Variable
+Alternatively, you can set OPENAI_API_KEY in your shell profile:
 
-```bash
+    echo 'export OPENAI_API_KEY="sk-xxxxxxxxxxx"' >> ~/.zshrc
+    source ~/.zshrc
 
-echo 'export OPENAI_API_KEY="sk-xxxxxxxxxxx"' >> ~/.zshrc
-source ~/.zshrc
-```
-#### Gippy will automatically pick it up.
+Gippy will automatically pick it up.
 
-## Usage
+## USAGE
+
 After installing and configuring:
 
-#### Basic Query:
+Basic Query:
 
-```bash
-gippy "Explain quantum entanglement in simple terms."
-```
+    gippy "Explain quantum entanglement in simple terms."
 
-#### Debug Mode:
+Debug Mode:
 
-```bash
-gippy --debug "Explain the debugging process in Swift."
-```
+    gippy --debug "Explain the debugging process in Swift."
+
 This prints detailed logs about the request headers, body, and response.
 
+Help / Subcommands:
 
-#### Help / Subcommands:
-
-```bash
-gippy --help
-```
-
-
-```bash
-gippy configure --help
-```
+    gippy --help
+    gippy configure --help
