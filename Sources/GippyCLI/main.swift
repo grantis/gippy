@@ -7,18 +7,122 @@ struct GippyCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "gippy",
         abstract: "Secure, native ChatGPT Terminal Interface with multi-thread support",
-        version: "2.0.0",
+        version: "2.1.0",
         subcommands: [
             Configure.self,
             ListThreads.self,
             OpenThread.self,
-            Ask.self
+            Ask.self,
+            Prompt.self
         ],
         defaultSubcommand: Ask.self
     )
     
+    // MARK: - Subcommand: prompt (Interactive Shell)
+    /// Continuously read user input and send it to the active thread (or create one).
+    struct Prompt: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: """
+            Drop into an interactive shell where each line is sent as a query.
+            Type '/exit' or press Ctrl+C to quit.
+            """
+        )
+        
+        @Flag(name: .shortAndLong, help: "Enable debug logging.")
+        var debug: Bool = false
+        
+        mutating func run() async throws {
+            // 1. Ensure we have an API key
+            let environmentKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
+            let configKey = await loadAPIKeyFromConfig()
+            guard let apiKey = environmentKey ?? configKey else {
+                print("No API key found.")
+                print("Please run `gippy configure` or set OPENAI_API_KEY.")
+                throw ExitCode.failure
+            }
+            
+            // 2. Load or create a thread
+            var thread = loadActiveThread()
+            if let existingThread = thread {
+                print("Currently active thread: [\(existingThread.id)].")
+            } else {
+                thread = createNewThread()
+                print("No active thread was found; created a new one [\(thread!.id)].")
+                saveActiveThreadID(thread!.id)
+            }
+            guard var currentThread = thread else {
+                print("Error: Could not load or create a thread.")
+                throw ExitCode.failure
+            }
+            
+            // 3. Enter an input loop
+            print("Entering interactive prompt mode. Type '/exit' to quit.")
+            while true {
+                // Prompt the user
+                print("> ", terminator: "")
+                guard let userInput = readLine(), !userInput.isEmpty else {
+                    continue  // skip if empty
+                }
+                
+                // Check for exit command
+                if userInput.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "/exit" {
+                    print("Exiting prompt mode.")
+                    return
+                }
+                
+                // Add user message to thread
+                currentThread.messages.append(ChatGPTMessage(role: "user", content: userInput))
+                
+                // Prepare request
+                let requestBody = ChatGPTRequest(
+                    model: "gpt-3.5-turbo",
+                    messages: currentThread.messages,
+                    temperature: 0.7
+                )
+                
+                if debug, let jsonData = try? JSONEncoder().encode(requestBody),
+                   let jsonString = String(data: jsonData, encoding: .utf8) {
+                    print("DEBUG: Request Body:", jsonString)
+                }
+                
+                // Send request
+                do {
+                    let headers: HTTPHeaders = [
+                        "Authorization": "Bearer \(apiKey)",
+                        "Content-Type": "application/json"
+                    ]
+                    
+                    let response = try await AF.request(
+                        "https://api.openai.com/v1/chat/completions",
+                        method: .post,
+                        parameters: requestBody,
+                        encoder: JSONParameterEncoder.default,
+                        headers: headers
+                    )
+                    .validate()
+                    .serializingDecodable(OpenAIResponse.self)
+                    .value
+                    
+                    // Append and print assistant response
+                    if let content = response.choices.first?.message.content {
+                        print(content)
+                        currentThread.messages.append(ChatGPTMessage(role: "assistant", content: content))
+                    } else {
+                        print("No response content from ChatGPT.")
+                    }
+                    
+                    // Save the updated thread
+                    saveThreadToDisk(thread: currentThread)
+                    saveActiveThreadID(currentThread.id)
+                } catch {
+                    print("Error during request: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
     // MARK: - Subcommand: ask
-    /// Ask a question in the current thread. If no current thread is set, start a new one automatically.
+    /// Ask a single question in the current thread. If no current thread is set, start a new one automatically.
     struct Ask: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: """
@@ -36,7 +140,7 @@ struct GippyCLI: AsyncParsableCommand {
         var query: String
         
         mutating func run() async throws {
-            // 1) Ensure we have an API key
+            // 1) Check API key
             let environmentKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
             let configKey = await loadAPIKeyFromConfig()
             guard let apiKey = environmentKey ?? configKey else {
@@ -45,8 +149,17 @@ struct GippyCLI: AsyncParsableCommand {
                 throw ExitCode.failure
             }
             
+            // (Optional) If you wanted to auto-drop into prompt mode from config:
+            let promptModeEnabled = await isPromptModeEnabled()
+            if promptModeEnabled {
+                print("Prompt mode is enabled in config. Switching to interactive shell...")
+                var prompt = Prompt(debug: debug)
+                try await prompt.run()
+                return
+            }
+            
             // 2) Determine the active thread or create a new one
-            var thread = loadActiveThread()  // load last opened thread from disk (if any)
+            var thread = loadActiveThread()
             
             if let existingThread = thread {
                 // There's an active thread. Prompt user to continue or start new.
@@ -71,15 +184,16 @@ struct GippyCLI: AsyncParsableCommand {
                     print("DEBUG: Created new thread: [\(thread!.id)] (no previous active thread).")
                 }
             }
+            
             guard var currentThread = thread else {
                 print("Error: Could not create or load a thread.")
                 throw ExitCode.failure
             }
             
-            // 3) Append the user's message to the thread
+            // 3) Append user message
             currentThread.messages.append(ChatGPTMessage(role: "user", content: query))
             
-            // 4) Build the request body for OpenAI
+            // 4) Build request
             let requestBody = ChatGPTRequest(
                 model: "gpt-3.5-turbo",
                 messages: currentThread.messages,
@@ -116,7 +230,7 @@ struct GippyCLI: AsyncParsableCommand {
                 .serializingDecodable(OpenAIResponse.self)
                 .value
                 
-                // 6) Save the assistant's response back into the thread
+                // 6) Save assistant response
                 if let content = response.choices.first?.message.content {
                     print(content)
                     currentThread.messages.append(ChatGPTMessage(role: "assistant", content: content))
@@ -124,9 +238,8 @@ struct GippyCLI: AsyncParsableCommand {
                     print("No response content from ChatGPT.")
                 }
                 
-                // 7) Persist the thread to disk (so we can continue it later)
+                // 7) Persist
                 saveThreadToDisk(thread: currentThread)
-                // also mark it as active
                 saveActiveThreadID(currentThread.id)
                 
             } catch {
@@ -179,13 +292,16 @@ struct GippyCLI: AsyncParsableCommand {
     }
     
     // MARK: - Subcommand: configure
-    /// Same as before: sets up or tests an API key in the user’s config file.
     struct Configure: ParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Set up your OpenAI API key via a local config file."
+            abstract: "Set up your OpenAI API key or toggle prompt mode via a local config file."
         )
         
+        @Flag(help: "Enable or disable interactive prompt mode by default.")
+        var promptMode: Bool = false
+        
         mutating func run() throws {
+            // 1) Request an API key
             print("OpenAI API Key Configuration")
             print("--------------------------------")
             print("Enter your OpenAI API key (sk-...): ", terminator: "")
@@ -196,9 +312,20 @@ struct GippyCLI: AsyncParsableCommand {
             }
             
             do {
-                try saveAPIKeyToConfig(key: newKey)
+                // 2) Save key + optional prompt mode
+                let oldConfig = try? loadFullGippyConfig()
+                let newConfig = GippyConfig(
+                    apiKey: newKey,
+                    promptMode: promptMode || (oldConfig?.promptMode ?? false)
+                )
+                try saveFullGippyConfig(config: newConfig)
+                
                 print("API key saved successfully!")
-                print("You can now run `gippy ask <query>`.")
+                if promptMode {
+                    print("Prompt mode is now enabled by default.")
+                }
+                print("You can now run `gippy ask <query>` or `gippy prompt`.")
+                
             } catch {
                 print("Failed to save API key:", error.localizedDescription)
                 throw ExitCode.failure
@@ -301,14 +428,22 @@ func loadActiveThread() -> GippyThread? {
     return loadThreadFromDisk(id: activeID)
 }
 
-// MARK: - Config File for API Key (unchanged from prior examples)
+// MARK: - Config File for API Key + Optional Prompt Mode
 
+// Update your config struct to include a `promptMode` field
+struct GippyConfig: Codable {
+    let apiKey: String
+    var promptMode: Bool  // new: default false unless user toggles
+}
+
+/// The legacy method used to load only the API key.
+//  We'll keep it around for backward compatibility.
 func loadAPIKeyFromConfig() async -> String? {
     let configPath = gippyConfigPath()
     guard FileManager.default.fileExists(atPath: configPath.path) else {
         return nil
     }
-    
+
     do {
         let data = try Data(contentsOf: configPath)
         let config = try JSONDecoder().decode(GippyConfig.self, from: data)
@@ -318,13 +453,19 @@ func loadAPIKeyFromConfig() async -> String? {
     }
 }
 
-func saveAPIKeyToConfig(key: String) throws {
+/// The new method for reading the *full* config object (API key + promptMode).
+func loadFullGippyConfig() throws -> GippyConfig {
+    let configPath = gippyConfigPath()
+    let data = try Data(contentsOf: configPath)
+    return try JSONDecoder().decode(GippyConfig.self, from: data)
+}
+
+func saveFullGippyConfig(config: GippyConfig) throws {
     let configDir = gippyConfigPath().deletingLastPathComponent()
     if !FileManager.default.fileExists(atPath: configDir.path) {
         try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
     }
     
-    let config = GippyConfig(apiKey: key)
     let data = try JSONEncoder().encode(config)
     try data.write(to: gippyConfigPath(), options: [.atomicWrite])
 }
@@ -341,11 +482,18 @@ func gippyThreadsDir() -> URL {
     return home.appendingPathComponent(".gippy").appendingPathComponent("threads")
 }
 
-// MARK: - Models
-struct GippyConfig: Codable {
-    let apiKey: String
+// If you want to conditionally enable prompt mode automatically:
+func isPromptModeEnabled() async -> Bool {
+    guard let data = try? Data(contentsOf: gippyConfigPath()) else { return false }
+    do {
+        let config = try JSONDecoder().decode(GippyConfig.self, from: data)
+        return config.promptMode
+    } catch {
+        return false
+    }
 }
 
+// MARK: - Models for Requests
 struct ChatGPTRequest: Encodable {
     let model: String
     let messages: [ChatGPTMessage]
